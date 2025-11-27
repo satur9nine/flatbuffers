@@ -258,6 +258,7 @@ class Builder(object):
       i = len(self.current_vtable) - 1
       trailing = 0
       trim = True
+      vt_entries = []
       while i >= 0:
         off = 0
         elem = self.current_vtable[i]
@@ -273,17 +274,24 @@ class Builder(object):
           off = objectOffset - elem
           trim = False
 
-        self.PrependVOffsetT(off)
+        vt_entries.append(VOffsetTFlags.py_type(off))
 
       # The two metadata fields are written last.
 
       # First, store the object bytesize:
-      self.PrependVOffsetT(VOffsetTFlags.py_type(objectSize))
+      vt_entries.append(VOffsetTFlags.py_type(objectSize))
 
       # Second, store the vtable bytesize:
       vBytes = len(self.current_vtable) - trailing + VtableMetadataFields
       vBytes *= N.VOffsetTFlags.bytewidth
-      self.PrependVOffsetT(VOffsetTFlags.py_type(vBytes))
+      vt_entries.append(VOffsetTFlags.py_type(vBytes))
+
+      field_entries = vt_entries[:-2]
+      field_entries.reverse()
+      ordered_entries = [vt_entries[-1], vt_entries[-2]]
+      ordered_entries.extend(field_entries)
+
+      self.WriteVtableEntries(ordered_entries)
 
       # Next, write the offset to the new vtable in the
       # already-allocated SOffsetT at the beginning of this object:
@@ -308,12 +316,29 @@ class Builder(object):
       encode.Write(
           packer.soffset,
           self.Bytes,
-          self.Head(),
+          self.head,
           SOffsetTFlags.py_type(vt2Offset - objectOffset),
       )
 
     self.current_vtable = None
     return objectOffset
+
+  def WriteVtableEntries(self, entries):
+    """Write a contiguous block of VOffsetT values with a single prep call."""
+    count = len(entries)
+    if count == 0:
+      return
+    elem_size = N.VOffsetTFlags.bytewidth
+    total_bytes = elem_size * count
+    self.Prep(elem_size, total_bytes - elem_size)
+    head = self.head - total_bytes
+    self.head = UOffsetTFlags.py_type(head)
+    pack = packer.voffset.pack_into
+    buf = memoryview_type(self.Bytes)
+    offset = head
+    for value in entries:
+      pack(buf, offset, value)
+      offset += elem_size
 
   def EndObject(self):
     """EndObject writes data necessary to finish object construction."""
@@ -834,8 +859,7 @@ class Builder(object):
   ##############################################################
 
   ## @cond FLATBUFFERS_INTERNAL
-  def PrependVOffsetT(self, x):
-    self.Prepend(N.VOffsetTFlags, x)
+
 
   def Place(self, x, flags):
     """Place prepends a value specified by `flags` to the Builder,
@@ -882,25 +906,7 @@ class Builder(object):
 
 
 ## @cond FLATBUFFERS_INTERNAL
-def vtableEqual(a, objectStart, b):
-  """vtableEqual compares an unwritten vtable to a written vtable."""
 
-  N.enforce_number(objectStart, N.UOffsetTFlags)
-
-  if len(a) * N.VOffsetTFlags.bytewidth != len(b):
-    return False
-
-  for i, elem in enumerate(a):
-    x = encode.Get(packer.voffset, b, i * N.VOffsetTFlags.bytewidth)
-
-    # Skip vtable entries that indicate a default value.
-    if x == 0 and elem == 0:
-      pass
-    else:
-      y = objectStart - elem
-      if x != y:
-        return False
-  return True
 
 
 ## @endcond
